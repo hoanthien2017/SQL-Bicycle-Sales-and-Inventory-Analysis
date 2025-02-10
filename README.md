@@ -48,8 +48,8 @@ order by period desc, name
 
 #### 2. Calculate YoY growth rates for quantity sold and rank the top 3 subcategories with the highest growth rates.
 Problem solving:
-- current quantity --> sum(itemxQty)
--  previus quantity--> lead function
+- Purrent quantity --> sum(itemxQty)
+- Previus quantity--> lead function
 - Quantity different by SubCategory by year --> current quantity / previus quantity
 - Filter top 3 category with highest grow rate -->dense rank order by quantity different
 
@@ -105,7 +105,7 @@ order by qty_rank ;
 
 #### 3.  Ranking Top 3 TeritoryID with biggest Order quantity of every year. If there's TerritoryID with same quantity in a year, do not skip the rank number
 **Problem solving**:
-- calculate Order quantity of each TeritoryID --> count(distinct m.SalesOrderID)
+- Calculate Order quantity of each TeritoryID --> count(distinct m.SalesOrderID)
 - Ranking Top 3 TeritoryID, do not skip the rank number --> dense rank
 
 ```sql
@@ -152,227 +152,261 @@ where order_count_rank in (1,2,3)
 |2012|	1|	8537|	3|
 </details>
 
-#### 4. Average Pageviews by Purchaser Type (June, July 2017)
-- Compares the average number of pageviews between purchasers and non-purchasers.
+#### 4. Calculate the total cost of discounts belonging to seasonal promotions for each subcategory.
+**Problem solving**:
+- Calculate cost of discount --> (Discount Cost = Disct Pct * Unit Price * Item Qty)
+- Filter type 'seasonal discount'
 ```sql
-with purchaser as (
-  select FORMAT_DATE('%Y%m', PARSE_DATE('%Y%m%d', date)) as month
-    ,round((sum(totals.pageviews) / count(distinct fullVisitorId)),8) as avg_pageviews_purchase
-  FROM `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
-  UNNEST (hits) hits,
-  UNNEST (hits.product) product
-  where (totals.transactions >=1) 
-    and (product.productRevenue is not null) 
-    and (_table_suffix between '0601' and '0731')
-  group by month
-  order by month
+select format_date('%Y', ModifiedDate) as _year
+  ,name
+  ,round(sum(discount_cost),2) as total_discount_cost
+from (
+    select distinct o.ModifiedDate
+    ,pp.name
+    ,s.DiscountPct
+    ,s.Type
+    ,s.DiscountPct * o.UnitPrice * o.OrderQty as discount_cost
+  from `adventureworks2019.Sales.SalesOrderDetail` o 
+  left join `adventureworks2019.Production.ProductTable` p on o.productID = p.productID
+  left join `adventureworks2019.Production.ProductSubcategory` pp on cast(p.ProductSubcategoryID AS int) = pp.ProductSubcategoryID
+  left join `adventureworks2019.Sales.SpecialOffer` s on s.SpecialOfferID = o.SpecialOfferID
+  where lower(Type) like '%seasonal discount%'
+  order by ModifiedDate
 )
-, non_purchaser as (
-  select FORMAT_DATE('%Y%m', PARSE_DATE('%Y%m%d', date)) as month
-    ,round((sum(totals.pageviews) / count(distinct fullVisitorId)),8) as avg_pageviews_non_purchase
-  FROM `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
-  UNNEST (hits) hits,
-  UNNEST (hits.product) product
-  where (totals.transactions is null) 
-    and (product.productRevenue is  null) 
-    and (_table_suffix between '0601' and '0731')
-  group by month
-  order by month
-)
-select p.month
-  ,p.avg_pageviews_purchase
-  ,np.avg_pageviews_non_purchase
-from purchaser p
-join non_purchaser np
-on p.month = np.month
-order by month;
+group by _year,name
 ```
 <details>
   <summary>Results</summary>
     
-|month |	avg_pageviews_purchase|	avg_pageviews_non_purchase|
+|_year |	name|	total_discount_cost|
 |----------------|	--------------|	----------------|
-|201706|	94.02050114|	316.86558846|
-|201707|	124.23755187|	334.0565598|
+|2012|	Helmets|	149.72|
+|2013|	Helmets|	543.22|
 </details>
 
-### 5. Average Transactions per User (July 2017)
-- Computes the average number of transactions per user who made a purchase in July 2017.
+### 5. Retention rate of Customer in 2014 with status of Successfully Shipped (Cohort Analysis)
+**Problem solving**:
+- Filter Successfully Shipped orders (Status = 5) in 2014 from the SalesOrderHeader table.
+- Use ROW_NUMBER() to identify each customer's first order month (month_join).
+- Calculate the difference between the first order month and subsequent months (month_diff).
+- Group data by month_join and month_diff to count distinct returning customers.
+- Analyze retention patterns over time for each customer cohort
 ```sql
-select FORMAT_DATE('%Y%m', PARSE_DATE('%Y%m%d', date)) as month
-  ,round((sum(totals.transactions) / count(distinct fullVisitorId)),9) as Avg_total_transactions_per_user
-from `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
-UNNEST (hits) hits,
-UNNEST (hits.product) product
-where (totals.transactions >=1) 
-  and (product.productRevenue is not null) 
-  and (_table_suffix between '0701' and '0731')
-group by month;
-```
-<details>
-  <summary>Results</summary>
-    
-|month |	Avg_total_transactions_per_user|
-|----------------|	--------------|
-|201707|	4.163900415|
-</details>
-
-### 6. Average Revenue per Session (July 2017)
-- Calculates the average revenue generated per session, considering only purchasing users.
-```sql
-select FORMAT_DATE('%Y%m', PARSE_DATE('%Y%m%d', date)) as month
-  ,round((SUM((product.productRevenue) / 1000000) / count(totals.visits)),2) as avg_revenue_by_user_per_visit
- from `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
-UNNEST (hits) hits,
-UNNEST (hits.product) product 
-where (totals.transactions is not null) 
-  and (product.productRevenue is not null)
-  and  (_table_suffix between '0701' and '0731')
-group by month;
-```
-<details>
-  <summary>Results</summary>
-    
-|month |	avg_revenue_by_user_per_visit|
-|----------------|	--------------|
-|201707|	43.86|
-</details>
-
-### 7. Other Products Purchased by Customers Who Bought "YouTube Men's Vintage Henley" (July 2017)
-- Identifies other products bought by customers who purchased the "YouTube Men's Vintage Henley" product.
-```sql
-with users_buy_the_product as (
-  select  fullVisitorId
-  from `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
-  UNNEST (hits) hits,
-  UNNEST (hits.product) product 
-  where product.v2ProductName = "YouTube Men's Vintage Henley"
-    and (_table_suffix between '0701' and '0731')
-    and product.productRevenue is not null
-  )
-
-select product.v2ProductName as other_purchased_products
-  ,sum(product.productQuantity) as quantity
-from `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
-UNNEST (hits) hits,
-UNNEST (hits.product) product 
-where fullVisitorId in (select fullVisitorId from users_buy_the_product)
-  and product.v2ProductName != "YouTube Men's Vintage Henley" 
-  and (_table_suffix between '0701' and '0731') 
-  and product.productRevenue is not null
-group by other_purchased_products
-order by quantity desc;
-```
-<details>
-  <summary>Results</summary>
-    
-|other_purchased_products |	quantity|
-|----------------|	--------------|
-|Google Sunglasses|	20|
-|Google Women's Vintage Hero Tee Black |	7|
-|SPF-15 Slim & Slender Lip Balm |	6|
-|Google Women's Short Sleeve Hero Tee Red Heather	|4|
-|Google Men's Short Sleeve Badge Tee Charcoal |	3|
-</details>
-
-### 8. Cohort Analysis: Product View to Add to Cart to Purchase (Jan, Feb, Mar 2017)
-- Computes the conversion rates from product views to cart additions and purchases at the product level.
-```sql
-with month_view_data as (
-  select FORMAT_DATE('%Y%m', PARSE_DATE('%Y%m%d', date)) as month
-        ,count(hits.eCommerceAction.action_type) as num_product_view
-  from `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
-  UNNEST (hits) hits
-  where hits.eCommerceAction.action_type = "2"
-  group by month
-  order by month
+with info as (
+  select extract(month from ModifiedDate) as month_order
+    ,extract (year from ModifiedDate) as year
+    ,CustomerID
+    ,count(distinct SalesOrderID) as sales_count
+  from `adventureworks2019.Sales.SalesOrderHeader`
+  where Status = 5 and extract (year from ModifiedDate) =2014
+  group by month_order,year,CustomerID
 )
-  , addtocart_data as (
-  select FORMAT_DATE('%Y%m', PARSE_DATE('%Y%m%d', date)) as month
-        ,count(hits.eCommerceAction.action_type) as num_addtocart
-  from `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
-  UNNEST (hits) hits
-  where hits.eCommerceAction.action_type = "3" 
-  group by month
-  order by month
+, row_num as (
+  select *
+    ,row_number() over (partition by CustomerID order by month_order asc) row_nb
+  from info
 )
-, purchase_data as (
-  select FORMAT_DATE('%Y%m', PARSE_DATE('%Y%m%d', date)) as month
-      ,count(hits.eCommerceAction.action_type) as num_purchase
-  from `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
-  UNNEST (hits) hits,
-  UNNEST (hits.product) product 
-  where hits.eCommerceAction.action_type = "6" 
-    and product.productRevenue is not null
-  group by month
-  order by month
+, first_order as (
+  select distinct month_order as month_join
+    ,year
+    ,CustomerID
+  from row_num
+  where row_nb = 1
+)
+, all_join as (
+  select distinct i.month_order
+    ,i.year
+    ,i.CustomerID
+    ,f.month_join
+    ,concat('M-',i.month_order - f.month_join) as month_diff
+  from info i
+  left join first_order f on i.CustomerID = f.CustomerID
+  order by month_diff
 )
 
-select m. month
-  ,m.num_product_view
-  ,a.num_addtocart
-  ,p.num_purchase
-  ,round(100*(a.num_addtocart / m.num_product_view ),2) as add_to_cart_rate
-  ,round(100*(p.num_purchase / m.num_product_view),2) as purchase_rate
-from  month_view_data m
-left join addtocart_data a 
-on m.month = a.month
-left join purchase_data p   
-on m.month = p.month 
-order by month;
+select distinct month_join
+  ,month_diff
+  ,count(distinct CustomerID) as customer_count
+from all_join
+group by month_join, month_diff
+order by month_join
 ```
 <details>
   <summary>Results</summary>
     
-|month |	num_product_view|	num_addtocart| num_purchase | add_to_cart_rate | purchase_rate |
-|----------------|	--------------|	----------------| ----------------| ----------------| ----------------|
-|201701|	25787|	7342|	2143|	28.47|	8.31|
-|201702|    21489|	7360|	2060|	34.25|	9.59|
-|201703|	23549|	8782|	2977|	37.29|	12.64|
-|201704|	24587|	10291|	2906|	41.86|	11.82|
-|201705|	25469|	10083|	3285|	39.59|	12.9|
-|201706|	22148|	9020|    2785|	40.73|	12.57|
-|201707|	28576|	11860|	3669|	41.5|    12.84|
-|201708|	1267|	494|	186|	38.99|	14.68|
+|month_join |	month_diff| customer_count |
+|----------------|	--------------| --------------|
+|1|	M-0|	2076|
+|1|	M-1|	78|
+|1|	M-2|	89|
+|1|	M-3|	252|
+|1|	M-4|	96|
+|1|	M-5|	61|
+|1|	M-6|	18|
+|2|	M-0|	1805|
+|2|	M-2|	61|
+|2|	M-3|	234|
+</details>
+
+### 6. Analyze month-over-month (MoM) stock levels and percentage changes for all products in 2011.
+**Problem solving**:
+- current stock quantity --> sum(StockedQty), in 2011
+- previous stock quantity --> lead
+- stock_level_diff --> (current stock quantity -  previous stock quantity) /  previous stock quantity
+-  If %gr rate is null then 0 -- case when
+```sql
+with current_stock as (
+select p.Name
+  ,format_date('%m', w.ModifiedDate)  as month 
+  ,format_date('%Y', w.ModifiedDate)  as year
+  ,sum(w.StockedQty) as stock_qty
+from adventureworks2019.Production.Product p
+left join adventureworks2019.Production.WorkOrder w 
+  on p.ProductID = w.ProductID
+where format_date('%Y', w.ModifiedDate) = '2011'
+group by name, month, year
+order by stock_qty desc
+)
+, add_prv_stock as(
+  select Name
+  ,month
+  ,year
+  ,stock_qty
+  ,lag(stock_qty) over (partition by Name order by month) as prz_stock
+  from current_stock
+  order by name, month desc
+)
+
+  select name
+    ,month
+    ,year
+    ,stock_qty
+    ,prz_stock
+    ,case 
+        when round((100*(stock_qty-prz_stock)/prz_stock),1) is null then 0
+        else round((100*(stock_qty-prz_stock)/prz_stock),1) 
+        end as stock_diff
+  from add_prv_stock
+  order by name, month desc
+```
+<details>
+  <summary>Results</summary>
+    
+|name |	month| year| stock_qty| prz_stock| stock_diff|
+|----------------|	--------------| --------------| --------------| --------------| --------------|
+|BB Ball Bearing|	12|	2011|	8475|	14544|	-41.7|
+|BB Ball Bearing|	11|	2011|	14544|	19175|	-24.2|
+|BB Ball Bearing|	10|	2011|	19175|	8845|	116.8|
+|BB Ball Bearing|	09|	2011|	8845|	9666|    -8.5|
+|BB Ball Bearing|	08|	2011|	9666|	12837|	-24.7|
+|BB Ball Bearing|	07|	2011|	12837|	5259|	144.1|
+|BB Ball Bearing|	06|	2011|	5259|	null|	0.0|
+|Blade|	12|	2011|	1842|	3598|	-48.8|
+|Blade|	11|	2011|	3598|	4670|	-23.0|
+|Blade|	10|	2011|	4670|	2122|	120.1|
+</details>
+
+### 7. Calculate the ratio of stock-to-sales for each product, by month, in 2011.
+**Problem solving**:
+- sum(sales and stock - sum(OrderQty), sum(StockedQty)
+- ratio of Stock --> sum(StockedQty) /  sum(OrderQty)
+- filter in 2011
+```sql
+with sale_info as (
+  select extract (month from o.ModifiedDate) as month
+    ,extract (year from o.ModifiedDate) as year
+    ,p.ProductID
+    ,p.name
+    ,sum(o.OrderQty) as sales
+  from`adventureworks2019.Sales.SalesOrderDetail` o
+  left join `adventureworks2019.Production.Product` p
+    on o.ProductID = p.ProductID
+    where format_timestamp("%Y", o.ModifiedDate) = '2011'
+  group by 1,2,3,4
+)
+, stock_info as(
+  select extract (month from ModifiedDate) as month
+    ,extract (year from ModifiedDate) as year
+    ,ProductID
+    ,sum(StockedQty) as stock
+  from `adventureworks2019.Production.WorkOrder`
+  where format_timestamp("%Y", ModifiedDate) = '2011'
+  group by 1,2,3
+)
+
+select s.month
+  ,s.year
+  ,s.ProductID
+  ,s.name
+  ,s.sales
+  ,ss.stock
+  ,round(coalesce(ss.stock,0) / s.sales, 2) AS ratio
+from sale_info s
+ full join stock_info ss
+on s.ProductID = ss.ProductID
+and s.month = ss.month 
+and s.year = ss.year
+order by month desc, ratio desc
+```
+<details>
+  <summary>Results</summary>
+    
+|month |	year|	ProductID| name | sales | stock | ratio |
+|----------------|	--------------|	----------------| ----------------| ----------------| ----------------|  ----------------|
+|12|	2011|	745|	HL Mountain Frame - Black, 48|	1|	27|	27.0|
+|12|	2011|	743|	HL Mountain Frame - Black, 42|	1|	26|	26.0|
+|12|	2011|	748|	HL Mountain Frame - Silver, 38|	2|	32|	16.0|
+|12|	2011|	722|	LL Road Frame - Black, 58|	4|	47|	11.75|
+|12|	2011|	747|	HL Mountain Frame - Black, 38|	3|	31|	10.33|
+|12|	2011|	726|	LL Road Frame - Red, 48|	5|	36|	7.2|
+|12|	2011|	738|	LL Road Frame - Black, 52|	10|	64|	6.4|
+|12|	2011|	730|	LL Road Frame - Red, 62|	7|	38|	5.43|
+|12|	2011|	741|	HL Mountain Frame - Silver, 48|	5|	27|	5.4|
+|12|	2011|	725|	LL Road Frame - Red, 44|	12|	53|	4.42|
+</details>
+
+### 8. Calculate the number of pending orders and their total value in 2014.
+**Problem solving**:
+- sum(PurchaseOrderID) --> count(distinct PurchaseOrderID)
+- sum(total sales) --> sum(TotalDue)
+- status = 1(pending)
+```sql
+select extract(year from ModifiedDate) as _year
+  ,status
+  ,count(distinct PurchaseOrderID) as order_count
+  ,sum(TotalDue) as value
+from adventureworks2019.Purchasing.PurchaseOrderHeader
+where status = 1 
+  and extract(year from ModifiedDate) = 2014
+group by _year, status
+```
+<details>
+  <summary>Results</summary>
+    
+|_year |	status|	order_count| value | 
+|----------------|	--------------|	----------------| ----------------| 
+|2014|	1|	224|	3873579.0123000029|	
 </details>
 
 ## Insights and Recommendations
-### 1️. Optimize Traffic and Conversion Rates
-#### Insights:
-- Traffic volume fluctuates, but transactions do not always scale proportionally.
-- High bounce rates from certain sources (e.g., YouTube) suggest engagement issues.
-#### Recommendations:
-- Invest in high-converting traffic sources while optimizing underperforming ones.
-- Improve landing pages and reduce friction for high-bounce traffic to increase engagement.
-
-### 2️. Revenue Optimization by Traffic Source
-#### Insights:
-- Direct traffic generates the highest revenue, while other sources contribute less.
-- Weekly revenue fluctuations indicate possible marketing inefficiencies.
-#### Recommendations:
-- Allocate budget to the highest revenue-generating traffic sources.
-- Implement time-based marketing campaigns to smooth out revenue inconsistencies.
-
-### 3️. Enhancing the Purchase Journey
-#### Insights:
-- A significant drop-off occurs between product views, add-to-cart, and purchase.
-- Purchasers browse fewer pages than non-purchasers, indicating decision-making hesitation.
-#### Recommendations:
-- Streamline checkout, offer incentives (e.g., discounts, free shipping) to encourage purchases.
-- Use urgency tactics (limited stock, countdown timers) to increase add-to-cart conversions.
-
-### 4️. Maximizing Order Value and Repeat Purchases
-#### Insights:
-- Customers who buy "YouTube Men's Vintage Henley" often purchase complementary products.
-- Purchasers have a higher average transaction per user, indicating strong retention potential.
-#### Recommendations:
-- Introduce product bundles and targeted upselling strategies.
-- Launch loyalty programs to retain high-value customers and drive repeat purchases.
-
-### 5️. Data-Driven Decision Making for Long-Term Growth
-#### Insights:
-- Monthly and weekly trends reveal opportunities for proactive strategy adjustments.
-- Revenue per session highlights the efficiency of the purchase funnel.
-#### Recommendations:
-- Monitor traffic source performance and adjust acquisition strategies accordingly.
-- Continuously test and optimize pricing, UX, and promotional strategies to maximize revenue.
+### 1️. Sales Performance and Growth:
+- Insights: Subcategories like Mountain Frames (5.21%), Socks (4.21%), and Road Frames (3.89%) showed the highest YoY growth.
+- Recommendations: Prioritize production and marketing efforts for high-growth subcategories to maximize revenue.
+### 2️. Inventory Management
+- Insights: Products like BB Ball Bearing experienced significant MoM stock fluctuations (e.g., -41.7% in December 2011).
+- Recommendations: Implement a dynamic inventory management system to stabilize stock levels and avoid overstock or stockouts.
+### 3️. Stock-to-Sales Efficiency
+- Insights: Products such as HL Mountain Frame (27.0 stock-to-sales ratio) indicate potential overstock issues.
+- Recommendations: Adjust inventory levels based on sales trends to reduce holding costs and improve cash flow.
+### 4️. Territory Performance
+- Insights: Territory ID 4 consistently ranked as the highest-performing region (e.g., 11,632 orders in 2014).
+- Recommendations: Focus marketing campaigns and resource allocation on top-performing territories to boost overall sales.
+### 5️. Seasonal Discounts
+- Insights: Subcategories like Helmets had significant seasonal discount costs (e.g., $543 in 2013).
+- Recommendations: Optimize discount strategies by analyzing ROI for each subcategory and focusing on high-margin items.
+### 6. Customer Retention
+- Insights: Cohort analysis revealed retention drops significantly after the first month (e.g., M-0: 2,076 customers vs. M-1: 78).
+- Recommendations: Implement loyalty programs and personalized offers to retain customers beyond their first purchase.
+### 7. Pending Orders
+- Insights: In 2014, 224 pending orders accounted for over $3.87M in value.
+- Recommendations: Address operational bottlenecks to expedite pending orders and prevent delays in revenue recognition.
