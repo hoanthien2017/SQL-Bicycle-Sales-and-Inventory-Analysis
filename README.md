@@ -16,95 +16,140 @@ This project analyzes sales, inventory, customer, and discount data for a bicycl
     |adventureworks2019.Production.WorkOrder |Manufacturing work orders. |
     |adventureworks2019.Sales.SpecialOffer   |Sale discounts lookup table. |
 ## Data Exploration
-#### 1. Total Visits, Pageviews, and Transactions (Jan, Feb, Mar 2017)
-- Calculates the total number of visits, pageviews, and transactions for the first three months of 2017.
-- Expected Output: Aggregated data for each month, ordered chronologically.
+#### 1. Calculate total quantity sold, sales value, and order count for each subcategory in the last 12 months.
+Problem solving:
+- Filter the last 12 months --> date(ModifiedDate) between   (date_sub(date(ModifiedDate), INTERVAL 12 month)) and '2014-06-30'
+- Sum of itemxQty, LineTotal, order quantity.
 ```sql
-SELECT distinct format_date('%Y%m', PARSE_DATE('%Y%m%d', date)) as month  
-  ,count (totals.visits)  as visits
-  ,sum (totals.pageviews) as pageviews
-  ,sum (totals.transactions) as transactions
-FROM `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`
-group by month
-order by month;
+select format_date('%b %Y', m.ModifiedDate) as Period
+  ,pp.name as name
+  ,sum(m.OrderQty) as Qty
+  ,sum(m.LineTotal) as LineTotal
+  ,count(distinct m.SalesOrderID)as Orde_cnt
+from `adventureworks2019.Sales.SalesOrderDetail` m
+left join `adventureworks2019.Production.ProductTable` p on m.productID = p.productID
+left join `adventureworks2019.Production.ProductSubcategory` pp on cast(p.ProductSubcategoryID AS int) = pp.ProductSubcategoryID
+where date(m.ModifiedDate) between date_sub('2014-06-30', INTERVAL 12 month) and '2014-06-30'
+group by period, Name
+order by period desc, name
 ```
 <details>
   <summary>Results</summary>
     
-|month |	visits|	pageviews| transactions |
-|----------------|	--------------|	----------------| ----------------|
-|201701|	64694	|257708| 713 |
-|201702|	62192	|233373| 733 |
-|201703|	69931	|259522| 993 |
-|201704|	67126	|242576| 959 |
-|201705|	65371	|255077| 1160 |
-|201706|	63578	|233210| 971 |
-|201707|	71812	|270554| 1072 |
-|201708|	2556	|10939| 45 |
+|Period |	name|	Qty| LineTotal | Orde_cnt |
+|----------------|	--------------|	----------------| ----------------| ----------------|
+|Sep 2013|	Bike Racks|	312|	22828.512000000002|	71|
+|Sep 2013|	Bike Stands|	26|	4134.0|	26|
+|Sep 2013|	Bottles and Cages|	803|	4676.56280799994|	380|
+|Sep 2013|	Bottom Brackets|	60|	3118.1400000000008|	19|
+|Sep 2013|	Brakes|	100|	6390.0|	29|
+|Sep 2013|	Caps|	440|	2879.4826160000002|	203|
 </details>
 
-#### 2. Bounce Rate by Traffic Source (July 2017)
-- Determines the bounce rate per traffic source to understand the effectiveness of each marketing channel.
-- Formula: Bounce Rate = total_bounces / total_visits
-```sql
-select distinct trafficSource.source as trafficSource
-  ,count(totals.visits) as total_visits
-  ,sum(totals.bounces) as total_no_of_bounces
-  ,round(100*(sum(totals.bounces) / count(totals.visits)),3) as bounce_rate
-from `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`
-where parse_date('%Y%m%d',date) between '2017-07-01' AND '2017-07-31'
-group by trafficSource 
-order by total_visits desc;
+#### 2. Calculate YoY growth rates for quantity sold and rank the top 3 subcategories with the highest growth rates.
+Problem solving:
+- current quantity --> sum(itemxQty)
+-  previus quantity--> lead function
+- Quantity different by SubCategory by year --> current quantity / previus quantity
+- Filter top 3 category with highest grow rate -->dense rank order by quantity different
+
+**Techniques Used**: Window functions (LEAD) for previous year comparisons.
+ ```sql
+with sale_info as ( 
+select format_date('%Y', m.ModifiedDate) as period
+  ,pp.name as name
+  ,sum(m.OrderQty) as qty_item
+from `adventureworks2019.Sales.SalesOrderDetail` m
+left join `adventureworks2019.Production.ProductTable` p on m.productID = p.productID
+left join `adventureworks2019.Production.ProductSubcategory` pp on cast(p.ProductSubcategoryID AS int) = pp.ProductSubcategoryID
+group by period,name
+order by name asc, period desc
+)
+, sale_diff as (
+  select period
+    ,name
+    ,qty_item
+    ,lead(qty_item) over (partition by name order by period desc) as prz_qty
+    ,round(qty_item / (lead(qty_item) over (partition by name order by period desc)) -1,2) as qty_diff
+  from sale_info
+  order by qty_diff desc 
+)
+, rank_qty_diff as (
+  select period
+    ,name
+    ,qty_item
+    ,prz_qty
+    ,qty_diff
+    ,dense_rank() over (order by qty_diff desc) as qty_rank
+  from sale_diff 
+)
+
+select distinct name
+    ,qty_item
+    ,prz_qty
+    ,qty_diff
+    ,qty_rank
+from rank_qty_diff 
+where qty_rank <= 3
+order by qty_rank ;
 ```
 <details>
   <summary>Results</summary>
     
-|trafficSource |	total_visits|	total_no_of_bounces| bounce_rate |
-|----------------|	--------------|	----------------| ----------------|
-| google |	38400 |	19798 |	51.557 |
-| (direct) |	19891 |	8606 |	43.266 |
-| youtube.com |	6351 |	4238 |	66.73 |
-| analytics.google.com |	1972 |	1064 |	53.955 |
-| Partners |	1788  |	936 |	52.349 |
+|name |	qty_item|	prz_qty| qty_diff | qty_rank |
+|----------------|	--------------|	----------------| ----------------| ----------------|
+|Mountain Frames|	3168|	510|	5.21|	1|
+|Socks|	2724|	523|	4.21|	2|
+|Road Frames|	5564|	1137|	3.89|	3|
 </details>
 
-#### 3. Revenue by Traffic Source (Weekly and Monthly, June 2017)
-- Analyzes revenue generated from different traffic sources on a weekly and monthly basis.
-- Uses UNNEST(hits) and UNNEST(hits.product) to access productRevenue
+#### 3.  Ranking Top 3 TeritoryID with biggest Order quantity of every year. If there's TerritoryID with same quantity in a year, do not skip the rank number
+**Problem solving**:
+- calculate Order quantity of each TeritoryID --> count(distinct m.SalesOrderID)
+- Ranking Top 3 TeritoryID, do not skip the rank number --> dense rank
+
 ```sql
-select 'Month'as time_type
-  ,FORMAT_DATE('%Y%m', PARSE_DATE('%Y%m%d', date)) as time
-  ,trafficSource.source as source
-  ,round((SUM(product.productRevenue) / 1000000),4) as revenue
-from `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
-UNNEST (hits) hits,
-UNNEST (hits.product) product
-WHERE FORMAT_DATE('%Y%m', PARSE_DATE('%Y%m%d', date)) = '201706'
-  and product.productRevenue is not null
-GROUP BY time, source
-union all
-select 'Week'as time_type
-  ,FORMAT_DATE('%Y%V', PARSE_DATE('%Y%m%d', date)) as time
-  ,trafficSource.source as source
-  ,round((SUM(product.productRevenue) / 1000000),4) as revenue
-from `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
-UNNEST (hits) hits,
-UNNEST (hits.product) product
-WHERE FORMAT_DATE('%Y%m', PARSE_DATE('%Y%m%d', date)) = '201706'
-  and product.productRevenue is not null
-GROUP BY time, source
-ORDER BY revenue desc;
+
+with product_count as (
+  select format_date('%Y', o.ModifiedDate) as _year
+    ,h.territoryID as territoryID
+    ,sum(o.OrderQty) as order_count
+    from `adventureworks2019.Sales.SalesOrderDetail` o 
+  left join `adventureworks2019.Sales.SalesOrderHeader` h
+   on h.SalesOrderID = o.SalesOrderID
+  group by _year, territoryID
+  order by _year desc 
+)
+  ,rank_territory as (
+  select _year
+    ,territoryID
+    ,order_count
+    ,dense_rank() over (partition by _year order by order_count desc) as order_count_rank
+  from product_count
+  order by _year desc, order_count_rank
+)
+
+select _year
+  ,territoryID
+  ,order_count
+  ,order_count_rank
+from rank_territory
+where order_count_rank in (1,2,3)
 ```
 <details>
   <summary>Results</summary>
     
-|time_type |	time|	source| revenue |
+|_year |	territoryID|	order_count| order_count_rank |
 |----------------|	--------------|	----------------| ----------------|
-|Month|	201706|	(direct)|	97333.6197|
-|Week|	201724|	(direct)|	30908.9099|
-|Week|	201725|	(direct)|	27295.3199|
-|Month|	201706|	google|	18757.1799|
-|Week|	201723|	(direct)|	17325.6799|
+|2014|	4|	11632|	1|
+|2014|	6|	9711|	2|
+|2014|	1|	8823|	3|
+|2013|	4|	26682|	1|
+|2013|	6|	22553|	2|
+|2013|	1|	17452|	3|
+|2012|	4|	17553|	1|
+|2012|	6|	14412|	2|
+|2012|	1|	8537|	3|
 </details>
 
 #### 4. Average Pageviews by Purchaser Type (June, July 2017)
